@@ -8,38 +8,33 @@ import fcntl
 BAUDRATE = termios.B38400
 SERIALDEVICE = '/dev/ttyS0'
 
-BUFF = ''
 BUFF_SIZE = 255
 
+# Open serial device
 try:
     fd = os.open(SERIALDEVICE, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
 except:
     print 'ERROR : No such device %s' % SERIALDEVICE
     sys.exit(-1)
 
-c_cflag = BAUDRATE | termios.CRTSCTS | termios.CS8 | termios.CLOCAL | termios.CREAD
-c_iflag = termios.IGNPAR | termios.ICRNL
+# Initialize attributes
+tio = [0] * 7
+tio[6] = [0] * 32
 
-fd_attrs = termios.tcgetattr(fd)
-
-for i in range(0, len(fd_attrs) - 1):
-    fd_attrs[i] = 0
-
-for i in range(0, len(fd_attrs[len(fd_attrs) - 1])):
-    fd_attrs[len(fd_attrs) - 1][i] = 0
-
-fd_attrs[0] = c_iflag
-fd_attrs[2] = c_cflag
+tio[0] = termios.IGNPAR | termios.ICRNL # c_iflag
+tio[2] = BAUDRATE | termios.CRTSCTS | termios.CS8 | termios.CLOCAL | termios.CREAD # c_cflag
 
 termios.tcflush(fd, termios.TCIFLUSH)
-termios.tcsetattr(fd, termios.TCSANOW, fd_attrs)
-
-print termios.tcgetattr(fd)
+termios.tcsetattr(fd, termios.TCSANOW, tio)
 
 while(1):
-    res = os.read(fd, BUFF_SIZE)
-    snd = os.write(fd, res)
-
     # implement PPP state machine in here!!!!
+
+    res = os.read(fd, BUFF_SIZE)
+
+    # Needs frame module to frame packets
+    # blah blah
+
+    snd = os.write(fd, res)
 
 os.close(fd)
