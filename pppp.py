@@ -3,9 +3,8 @@ import sys
 import termios
 import re
 
-from ppp import PPP
-from hdlc import HDLC
-
+from pppp import PPP
+from pppp.hdlc import HDLC
 
 DEBUG = False
 
@@ -20,7 +19,6 @@ BUFF_SIZE = 1502
 ERROR_NO_ARGUMENTS = -1
 ERROR_NO_DEVICES = -2
 
-DEBIG_PRINT_FORMAT = '%s [%s %s id=%x %s]'  # (rcvd, sent) , (protocol), (state), (id), (option)
 IP_PRINT_FORMAT = '%s IP address %s'  # (local , remote), ip
 IP_REGEX = r'^(25[0-5]|(2[0-4]|1\d|\d)?\d.){3}(25[0-5]|(2[0-4]|1\d|\d)?\d)$'
 
@@ -74,22 +72,24 @@ def main(argv):
 
     pppp = PPP(framer=HDLC())
     STOP = False
-
+    TIMEOUT_COUNT = 10
     while not STOP:
-        # implement PPP state machine in here!!!!
-
         recv_packet = os.read(fd, BUFF_SIZE)
 
         if recv_packet:
-            #print 'rcvd', recv_packet.encode('hex')
             pppp.putPacketToFramer(recv_packet)
 
             pppp.run()
 
             send_packet = pppp.getPacketFromFramer()
+
             if send_packet != -1:
                 if os.write(fd, send_packet) > 0:
                     print 'sent', send_packet.encode('hex')
+        else:
+            # make LCP ConfReq and send
+            # need to timeout : 10 times
+            pass
 
     os.close(fd)
 
