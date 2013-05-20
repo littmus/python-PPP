@@ -1,4 +1,4 @@
-class FCS16:
+class FCS16(object):
 
     fcstab = [
         0x0000, 0x1189, 0x2312, 0x329b, 0x4624, 0x57ad, 0x6536, 0x74bf,
@@ -39,28 +39,34 @@ class FCS16:
     _PPP_GOOD_FCS16 = 0xf0b8
 
     def __init__(self):
-        raise Exception("Do not instantiate FCS class.")
+        pass
 
     @classmethod
-    def pppfcs16(self, fcs, packet):
+    def pppfcs16(self, fcs, packet, formated=False):
         for ch in packet:
             fcs = (fcs >> 8) ^ self.fcstab[(fcs ^ ord(ch)) & 0xff]
 
+        if formated is True:
+            fcs = fcs ^ 0xffff
+            fcs = chr(fcs & 0x00ff), chr((fcs >> 8) & 0x00ff)
+
+        return fcs
+
+    @classmethod
+    def fcsFormat(self, fcs):
         fcs = fcs ^ 0xffff
         fcs = chr(fcs & 0x00ff), chr((fcs >> 8) & 0x00ff)
+        fcs = ''.join(map(lambda c: c, fcs))
 
         return fcs
 
 
 class HDLCError(Exception):
     def __init__(self, message, packet):
-        Exception.__init__(self, message, packet)
+        super(HDLCError, self).__init__(self, message, packet.encode('hex'))
 
 
-from protocol import Protocol
-
-
-class HDLC:
+class HDLC(object):
 
     _FLAG_SEQUENCE = chr(0x7e)
     _ESCAPE_SEQUENCE = chr(0x7d)
@@ -68,31 +74,36 @@ class HDLC:
     _ADDRESS_ALL_STATIONS = chr(0xff)
     _CONTROL_UNNUMBERED_INFO = chr(0x03)
 
-    inputPacket = None
-    outputPacket = None
+    _inputPacket = None
+    _outputData = None
+
+    _NO_FS_CASE = [
+        chr(0xc0) + chr(0x21) + chr(0x09),
+        chr(0xc0) + chr(0x21) + chr(0x0a),
+        chr(0x80) + chr(0x21),
+    ]
 
     def __init__(self):
         self.packet = None
         self.inputPacket = []
-        self.outputPacket = []
+        self.outputData = []
 
     def putPacket(self, packet):
         self.inputPacket.append(packet)
 
-    def getPacket(self):
-        return self.outputPacket.pop(0)
+    def getData(self):
+        return self.outputData.pop(0)
 
-    def parsePacket(self, packet):
+    def unescapePacket(self, packet):
 
         packet = ''.join(packet)
-        print packet.encode('hex')
 
         escaped = False
-        parsedPacket = []
+        unescapedPacket = []
 
         for ch in packet:
-            if ord(ch) < self._ESCAPE_VALUE:
-                continue
+            #if ord(ch) < self._ESCAPE_VALUE:
+            #    continue
 
             if escaped:
                 escaped = False
@@ -105,95 +116,122 @@ class HDLC:
                 escaped = True
                 continue
 
-            parsedPacket.append(ch)
+            unescapedPacket.append(ch)
 
-        return parsedPacket
+        return unescapedPacket
 
-    def validatePacket(self, packet):
-
+    def validatePacket_(self, packet):
         packet = ''.join(packet)
+        remain_packet = ''
+
+        #print 'validate', packet.encode('hex')
 
         if len(packet) < 2:
-            raise HDLCError('Invalid packet length.', packet)
+            raise HDLCError('Packet is too short to validate.', packet)
 
-        if not packet.startswith(self._FLAG_SEQUENCE):
-            # case of ['not start with fs, ~~~'], it cannot be a valid packet
-            if len(self.inputPacket) == 1:
-                self.inputPacket.pop(0)
-            raise HDLCError('Starting flag sequence is missing.', packet)
+        no_fs = False
+        fs_start = packet.startswith(self._FLAG_SEQUENCE)
 
-        if not packet.endswith(self._FLAG_SEQUENCE):
-            raise HDLCError('Ending flag sequence is missing.', packet)
+        if fs_start:
+            for case in self._NO_FS_CASE:
+                if packet[1:].startswith(case):
+                    no_fs = True
+                    break
 
-        # check fcs
-        
-        # fcs in packet
-        fcs_orig = packet[-3:-1].encode('hex')
+            fs_end = packet.find(self._FLAG_SEQUENCE, 1)
+            if fs_end == -1:
+                raise HDLCError('Ending flag sequence is missing.', packet)
 
-        # fcs of packet
-        fcs_packet = packet[1:-3]
-        
-        fcs_calc = FCS16.pppfcs16(FCS16._PPP_INITIAL_FCS16, fcs_packet)
-        fcs_calc = ''.join(map(lambda c: c.encode('hex'), fcs_calc))
+            if no_fs is True:
+                remain_packet = packet[fs_end:]
+                packet = packet[1:fs_end]
+            else:
+                remain_packet = packet[fs_end + 1:]
+                packet = packet[:fs_end + 1]
+        else:
+            for case in self._NO_FS_CASE:
+                if packet.startswith(case):
+                    no_fs = True
+                    break
+                if packet[1:].startswith(case):
+                    no_fs = True
+                    break
+                if packet[2:].startswith(case):
+                    no_fs = True
+                    break
+            fs_end = packet.find(self._FLAG_SEQUENCE)
+            if fs_end == -1:
+                raise HDLCError('Ending flag sequence is missing.', packet)
+            
+            if no_fs is True:
+                remain_packet = packet[fs_end + 1:]
+                packet = packet[:fs_end]
+            else:
+                self.inputPacket = []
+                raise HDLCError('Starting flag sequence is missing.', packet)
 
-        if fcs_orig != fcs_calc:
-            raise HDLCError('Invalid frame check sequence.', packet)
-        """
-        fcs = FCS16.pppfcs16(FCS16._PPP_INITIAL_FCS16, packet[1:-1])
+        fcs = None
+        if no_fs is True:
+            fcs = FCS16.pppfcs16(FCS16._PPP_INITIAL_FCS16, packet)
+        else:
+            if len(packet) == 2:
+                self.inputPacket = []
+                raise HDLCError('Empty Frame', packet)
+
+            address = packet[1]
+            if address != self._ADDRESS_ALL_STATIONS:
+                raise HDLCError('Invalid address field value.', packet)
+
+            control = packet[2]
+            if control != self._CONTROL_UNNUMBERED_INFO:
+                raise HDLCError('Invalid control field value.', packet)
+
+            fcs = FCS16.pppfcs16(FCS16._PPP_INITIAL_FCS16, packet[1:-1])
 
         if fcs != FCS16._PPP_GOOD_FCS16:
-            raise HDLCError('Invalid frame check sequence.', packet)
-        """
-        # It's valid packet and remove from inputPacket stack
-        print 'recv', packet.encode('hex')
+            self.inputPacket = []
+            raise HDLCError('Invalid frame check sequence value.', packet)
+
         self.inputPacket = []
+        self.inputPacket.append(remain_packet)
 
-    def processPacket(self, packet):
+        return (packet, no_fs)
 
-        proccessed_packet = []
-        packet = ''.join(packet)
+    def processPacket(self, packet, no_fs):
 
-        # remove flag sequence, address and control field and fcs
-        packet = packet[3:-3]
+        # remove flag sequence, address & control field and fcs
+        if no_fs is False:
+            packet = packet[3:-3]
 
         protocol_value = int(packet[:2].encode('hex'), 16)
         information = packet[2:]
 
-        # padding?
-        protocol = Protocol(protocol_value=protocol_value)
-        protocol.sendInfoToProtocol(information)
-        protocol.run()
-        prtocol_packet = protocol.getInfoFromProtocol()
+        return (protocol_value, information)
 
-        proccessed_packet.append(packet)
-
-        return proccessed_packet
-
-    def framePacket(self, packet):
+    def framePacket(self, packet, no_fs):
 
         unframed_packet = []
         framed_packet = []
-        packet = ''.join(packet)
 
         framed_packet.append(self._FLAG_SEQUENCE)
+        if no_fs is False:
+            unframed_packet.append(self._ADDRESS_ALL_STATIONS)
+            unframed_packet.append(self._CONTROL_UNNUMBERED_INFO)
 
-        unframed_packet.append(self._ADDRESS_ALL_STATIONS)
-        unframed_packet.append(self._CONTROL_UNNUMBERED_INFO)
         unframed_packet.append(packet)
-
         unframed_packet = ''.join(unframed_packet)
 
-        fcs = FCS16.pppfcs16(FCS16._PPP_INITIAL_FCS16, unframed_packet)
+        fcs = FCS16.pppfcs16(FCS16._PPP_INITIAL_FCS16, unframed_packet, True)
         fcs = ''.join(map(lambda c: c, fcs))
 
         unframed_packet += fcs
         for ch in unframed_packet:
-            if ord(ch) < self._ESCAPE_VALUE:
+            if ord(ch) < self._ESCAPE_VALUE or ch in [self._FLAG_SEQUENCE, self._ESCAPE_SEQUENCE]:
                 framed_packet.append(self._ESCAPE_SEQUENCE)
                 framed_packet.append(chr(ord(ch) ^ self._ESCAPE_VALUE))
             else:
                 framed_packet.append(ch)
-        
+
         framed_packet.append(self._FLAG_SEQUENCE)
         framed_packet = ''.join(framed_packet)
 
@@ -201,17 +239,13 @@ class HDLC:
 
     def run(self):
         try:
-            parsedPacket = self.parsePacket(self.inputPacket)
+            unescapedPacket = self.unescapePacket(self.inputPacket)
 
-            self.validatePacket(parsedPacket)
+            (validPacket, no_fs) = self.validatePacket_(unescapedPacket)
 
-            proccessedPacket = self.processPacket(parsedPacket)
+            protocolData = self.processPacket(validPacket, no_fs)
 
-            framedPacket = self.framePacket(proccessedPacket)
-
-            self.outputPacket.append(framedPacket)
+            self.outputData.append(protocolData)
         except HDLCError as e:
-            print '%s : %s' % (e.args[0], e.args[1].encode('hex'))
-            #print ''.join(self.inputPacket).encode('hex')
-            #print [ip.encode('hex') for ip in self.inputPacket]
-            self.outputPacket.append(-1)
+            #print e.args[0]
+            self.outputData.append(-1)

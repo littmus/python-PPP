@@ -2,11 +2,10 @@ import os
 import sys
 import termios
 import re
+import time
 
 from pppp import PPP
 from pppp.hdlc import HDLC
-
-DEBUG = False
 
 BAUDRATE = None
 SERIALDEVICE = None
@@ -14,13 +13,13 @@ SERIALDEVICE = None
 LOCAL_IP = None
 REMOTE_IP = None
 
-BUFF_SIZE = 1502
+BUFF_SIZE = 1500
 
 ERROR_NO_ARGUMENTS = -1
 ERROR_NO_DEVICES = -2
 
 IP_PRINT_FORMAT = '%s IP address %s'  # (local , remote), ip
-IP_REGEX = r'^(25[0-5]|(2[0-4]|1\d|\d)?\d.){3}(25[0-5]|(2[0-4]|1\d|\d)?\d)$'
+IP_REGEX = r'^(25[0-5]|(2[0-4]|1\d|\d)?\d.){3}(25[0-5]|(2[0-4]|1\d|\d)?\d):(25[0-5]|(2[0-4]|1\d|\d)?\d.){3}(25[0-5]|(2[0-4]|1\d|\d)?\d)$'
 
 
 def main(argv):
@@ -31,24 +30,44 @@ def main(argv):
     # Processing arguments
     # Need to change by using argparser
     # import argparser
+    options = {
+        'debug': False,
+        'noaccomp': False,
+        'nopcomp': False,
+        'local_ip': '',
+        'remote_ip': '',
+        'device': '',
+        'speed': '',
+    }
+
     for arg in argv:
 
         # Get ttyname
         if re.match(r'^/dev/tty\w+$', arg):
             SERIALDEVICE = arg
+            options['device'] = arg
         elif re.match(r'^tty\w+$', arg):
             SERIALDEVICE = '/dev/' + arg
+            options['device'] = arg
+        # Get debug option
         elif re.match(r'^debug$', arg):
-            DEBUG = True
+            options['debug'] = True
         # Get spped
         elif re.match(r'^\d+$', arg):
+            options['speed'] = arg
             try:
                 BAUDRATE = getattr(termios, 'B' + arg)
             except:
-                BAUDRATE = termios.B38400
+                BAUDRATE = termios.B0
         # Get Local/Remote IP address
-        elif re.match(IP_REGEX + ':' + IP_REGEX, arg):
-            LOCAL_IP, REMOTE_IP = arg.split(':')
+        elif re.match(IP_REGEX, arg):
+            options['local_ip'], options['remote_ip'] = arg.split(':')
+        # Get accomp option
+        elif re.match(r'^noaccomp$', arg):
+            options['noaccomp'] = True
+        # Get pcomp option
+        elif re.match(r'^nopcomp$', arg):
+            options['nopcomp'] = True
 
     # Open serial device
     try:
@@ -70,28 +89,41 @@ def main(argv):
     termios.tcflush(fd, termios.TCIFLUSH)
     termios.tcsetattr(fd, termios.TCSANOW, tio)
 
-    pppp = PPP(framer=HDLC())
+    pppp = PPP(framer=HDLC(), options=options)
     STOP = False
     TIMEOUT_COUNT = 10
+    COUNT = 0
     while not STOP:
-        recv_packet = os.read(fd, BUFF_SIZE)
+        try:
+            recv_packet = os.read(fd, BUFF_SIZE)
 
-        if recv_packet:
-            pppp.putPacketToFramer(recv_packet)
+            if pppp._STATE == 0:
+                pppp.run(income=False)
 
-            pppp.run()
+            if recv_packet:
+                pppp._STATE = 1
+                pppp.putPacket(recv_packet)
 
-            send_packet = pppp.getPacketFromFramer()
+                pppp.run()
 
-            if send_packet != -1:
-                if os.write(fd, send_packet) > 0:
-                    print 'sent', send_packet.encode('hex')
-        else:
-            # make LCP ConfReq and send
-            # need to timeout : 10 times
+                send_packet = pppp.getPacket()
+
+                if send_packet not in [-1, -2, -3]:
+                    os.write(fd, send_packet)
+                else:
+                    pass
+            else:
+                if pppp._STATE == 0:
+                    time.sleep(3)
+                    COUNT += 1
+                    if COUNT >= TIMEOUT_COUNT:
+                        print 'LCP: timeout sending Config-Requests'
+                        break
+        except:
             pass
 
     os.close(fd)
+    print 'Modem hangup'
 
     return 1
 
